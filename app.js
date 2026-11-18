@@ -14,15 +14,18 @@ const names = {
 const fileExtensions = { cpp: "cpp", python: "py", java: "java", pascal: "pas", text: "txt" };
 const uploadLanguages = { cpp: "cpp", cc: "cpp", cxx: "cpp", py: "python", java: "java", pas: "pascal", txt: "text" };
 const maxDraftSize = 128 * 1024;
+const storagePrefix = "beloi:";
+const scoreFormat = new Intl.NumberFormat("ru", { maximumFractionDigits: 2 });
 let listView = "archive";
 let route = { view: "archive" };
 let noticeTimeout;
-let saved = read("saved", {});
-let scores = read("scores", {});
+const saved = readTaskStates("saved");
+const scores = readTaskStates("scores");
 
 function read(key, fallback) {
   try {
-    return JSON.parse(localStorage.getItem("beloi:" + key)) ?? fallback;
+    const value = localStorage.getItem(storagePrefix + key);
+    return value === null ? fallback : JSON.parse(value);
   } catch {
     return fallback;
   }
@@ -30,11 +33,31 @@ function read(key, fallback) {
 
 function store(key, value) {
   try {
-    localStorage.setItem("beloi:" + key, JSON.stringify(value));
+    localStorage.setItem(storagePrefix + key, JSON.stringify(value));
     return true;
   } catch {
     return false;
   }
+}
+
+function isScore(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 100 && Math.round(value * 100) / 100 === value;
+}
+
+function readTaskStates(kind) {
+  const previous = read(kind, {});
+  const states = {};
+  for (const task of tasks) {
+    const value = read(kind + ":" + task.id, previous?.[task.id]);
+    if (kind === "saved" ? value === true : isScore(value)) states[task.id] = value;
+  }
+  return states;
+}
+
+function updateTaskState(kind, id, value) {
+  const states = kind === "saved" ? saved : scores;
+  if (kind === "saved" ? value === true : isScore(value)) states[id] = value;
+  else delete states[id];
 }
 
 function notice(message) {
@@ -67,9 +90,9 @@ function letterBadge(task) {
 }
 
 function toggleSaved(id, button) {
-  if (saved[id]) delete saved[id];
-  else saved[id] = true;
-  const persisted = store("saved", saved);
+  const value = button.getAttribute("aria-pressed") !== "true";
+  updateTaskState("saved", id, value);
+  const persisted = store("saved:" + id, value);
   updateProgress();
   if (listView === "saved" && !route.task) {
     renderList();
@@ -77,14 +100,19 @@ function toggleSaved(id, button) {
     if (nextBookmark) nextBookmark.focus();
     else $("search").focus();
   } else {
-    button.setAttribute("aria-pressed", Boolean(saved[id]));
-    const label = saved[id] ? "Убрать из избранного" : "В избранное";
-    button.setAttribute("aria-label", label);
-    button.title = label;
-    if (button.querySelector(".bookmark-label")) button.querySelector(".bookmark-label").textContent = label;
-    paintIcons(button.parentElement);
+    updateBookmark(button, value);
   }
-  notice(persisted ? (saved[id] ? "Задача в избранном" : "Задача убрана из избранного") : "Браузер не сохранил избранное");
+  notice(persisted ? (value ? "Задача в избранном" : "Задача убрана из избранного") : "Браузер не сохранил избранное");
+}
+
+function updateBookmark(button, value) {
+  button.setAttribute("aria-pressed", value);
+  const label = value ? "Убрать из избранного" : "В избранное";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  const buttonLabel = button.querySelector(".bookmark-label");
+  if (buttonLabel) buttonLabel.textContent = label;
+  paintIcons(button.parentElement);
 }
 
 function updateProgress() {
@@ -99,10 +127,10 @@ function updateProgress() {
 
 function renderSummary() {
   const solved = tasks.filter((task) => scores[task.id] === 100).length;
-  const count = tasks.filter((task) => Number.isInteger(scores[task.id])).length;
-  const points = tasks.reduce((sum, task) => sum + (scores[task.id] || 0), 0);
+  const count = tasks.filter((task) => isScore(scores[task.id])).length;
+  const cents = tasks.reduce((sum, task) => sum + Math.round((scores[task.id] ?? 0) * 100), 0);
   const stats = listView === "progress"
-    ? [["check", solved, "Решено на 100"], ["chart", points, "Баллов набрано"], ["target", count, "Задач с результатом"]]
+    ? [["check", solved, "Решено на 100"], ["chart", scoreFormat.format(cents / 100), "Баллов набрано"], ["target", count, "Задач с результатом"]]
     : [["grid", tasks.length, "Задачи"], ["layers", "III и IV", "Этапы"], ["calendar", 2, "Сезона"]];
   $("summary").innerHTML = stats.map(([symbol, value, label]) => `
     <div class="metric"><span class="metric-icon" data-icon="${symbol}" aria-hidden="true"></span>
@@ -111,7 +139,7 @@ function renderSummary() {
 }
 
 function searched(value) {
-  return value.toLocaleLowerCase("ru").replaceAll("ё", "е").trim();
+  return value.toLocaleLowerCase("ru").replaceAll("ё", "е").replace(/\s+/gu, " ").trim();
 }
 
 function renderList() {
@@ -122,7 +150,7 @@ function renderList() {
     if ($("stage").value && task.stage !== Number($("stage").value)) return false;
     if ($("tour").value && task.tour !== Number($("tour").value)) return false;
     if (listView === "saved") return Boolean(saved[task.id]);
-    if (listView === "progress") return Number.isInteger(scores[task.id]);
+    if (listView === "progress") return isScore(scores[task.id]);
     return true;
   });
   $("result-count").textContent = formatCount(selected.length);
@@ -149,11 +177,11 @@ function renderList() {
 
 function row(task) {
   const score = scores[task.id];
-  const status = score === 100 ? "100 · Решено" : Number.isInteger(score) ? score + " / 100" : "—";
-  const scoreClass = score === 100 ? "solved" : Number.isInteger(score) ? "scored" : "";
+  const status = score === 100 ? "100 · Решено" : isScore(score) ? scoreFormat.format(score) + " / 100" : "—";
+  const scoreClass = score === 100 ? "solved" : isScore(score) ? "scored" : "";
   const bookmark = saved[task.id] ? "Убрать из избранного" : "В избранное";
   return `<tr>
-    <td><a class="task-name" href="#task/${task.id}">${letterBadge(task)}<span>${task.title}</span></a></td>
+    <td><a class="task-name" href="#task/${task.id}">${letterBadge(task)}<span>${task.title}<small class="task-compact">Тур ${task.tour}<span class="compact-score ${scoreClass}">${isScore(score) ? " · " + status : ""}</span></small></span></a></td>
     <td>${task.season}</td><td>${stageTag(task)}</td><td class="tour-column">${task.tour}</td>
     <td class="status-column"><span class="row-status ${scoreClass}">${status}</span></td>
     <td class="row-actions"><button class="icon-btn" data-icon="bookmark" data-bookmark="${task.id}" aria-label="${bookmark}" aria-pressed="${Boolean(saved[task.id])}" title="${bookmark}"></button>
@@ -166,7 +194,7 @@ function resetFilters() {
   if (listView.startsWith("stage-")) $("stage").value = listView.slice(-1);
 }
 
-function renderRoute() {
+function renderRoute(moveFocus = false) {
   const hash = location.hash.slice(1);
   const task = byId.get(hash.startsWith("task/") ? hash.slice(5) : "");
   const view = task ? listView : Object.hasOwn(names, hash) ? hash : "archive";
@@ -204,12 +232,13 @@ function renderRoute() {
   }
   closeNavigation();
   window.scrollTo(0, 0);
+  if (moveFocus) $(task ? "task-title" : "catalog-title").focus({ preventScroll: true });
 }
 
 function renderTask(task) {
   const key = "draft:" + task.id;
-  const draft = read(key, {});
-  const language = fileExtensions[draft.language] ? draft.language : task.mode === "outputs" ? "text" : "cpp";
+  const draft = read(key, {}) ?? {};
+  const language = Object.hasOwn(fileExtensions, draft.language) ? draft.language : task.mode === "outputs" ? "text" : "cpp";
   const bookmark = saved[task.id] ? "Убрать из избранного" : "В избранное";
   const taskIndex = tasks.indexOf(task);
   const neighbor = (offset, label) => {
@@ -220,18 +249,18 @@ function renderTask(task) {
   };
   const judgeNote = {
     outputs: "Это задача с открытыми тестами. Смотри в контесте, в каком формате отправлять выходные файлы.",
-    mixed: "У задачи две части с разными форматами сдачи. Найди обе по названию в контесте.",
+    mixed: "У задачи две части с разными форматами сдачи. Найди обе по названию в контесте и запиши сумму баллов за обе части (максимум 70 + 30).",
     interactive: "Отправь программу в Яндекс Контест. Она будет обмениваться запросами с программой жюри.",
     code: "Войди в Яндекс Контест, найди задачу " + task.letter + " и отправь код. Контест покажет вердикт и баллы.",
   }[task.mode];
-  const checked = Number.isInteger(scores[task.id]);
+  const checked = isScore(scores[task.id]);
   $("task-view").innerHTML = `
     <div class="task-top">
       <a class="back" href="#${listView}">${icon("arrow-left")} ${names[listView]}</a>
       <button class="outline-btn" data-bookmark="${task.id}" aria-pressed="${Boolean(saved[task.id])}" aria-label="${bookmark}" title="${bookmark}">${icon("bookmark")}<span class="bookmark-label">${bookmark}</span></button>
     </div>
     <section class="task-card" aria-labelledby="task-title">
-      <div class="task-title">${letterBadge(task)}<h1 id="task-title">${task.title}</h1></div>
+      <div class="task-title">${letterBadge(task)}<h1 id="task-title" tabindex="-1">${task.title}</h1></div>
       <div class="task-meta">
         ${stageTag(task)}<span>Тур ${task.tour}</span><span>${icon("calendar")} ${task.date}</span>
         ${task.time === null ? '<span>Открытые тесты</span>' : `<span>${icon("clock")} ${String(task.time).replace(".", ",")} с</span><span>${icon("memory")} ${task.memory} МБ</span>`}
@@ -267,7 +296,7 @@ function renderTask(task) {
         <form class="score-form" id="score-form">
           <label for="score">Баллы из Контеста</label>
           <div class="score-input">
-            <input id="score" type="number" min="0" max="100" step="1" required placeholder="0–100" value="${checked ? scores[task.id] : ""}">
+            <input id="score" type="number" inputmode="decimal" min="0" max="100" step="0.01" required placeholder="0–100" value="${checked ? scores[task.id] : ""}">
             <button class="outline-btn">Записать</button>
             <button class="outline-btn remove-score" id="remove-score" type="button" ${checked ? "" : "hidden"}>Убрать</button>
           </div>
@@ -279,17 +308,23 @@ function renderTask(task) {
   bindEditor(key, draft, language);
   $("score-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    scores[task.id] = $("score").valueAsNumber;
+    const scoreInput = $("score");
+    const value = scoreInput.valueAsNumber;
+    if (!isScore(value)) return;
+    updateTaskState("scores", task.id, value);
+    scoreInput.defaultValue = String(value);
+    scoreInput.value = scoreInput.defaultValue;
     $("remove-score").hidden = false;
     updateProgress();
-    notice(store("scores", scores) ? "Баллы записаны" : "Браузер не сохранил баллы");
+    notice(store("scores:" + task.id, value) ? "Баллы записаны" : "Браузер не сохранил баллы");
   });
   $("remove-score").addEventListener("click", () => {
-    delete scores[task.id];
+    updateTaskState("scores", task.id, null);
+    $("score").defaultValue = "";
     $("score").value = "";
     $("remove-score").hidden = true;
     updateProgress();
-    notice(store("scores", scores) ? "Результат убран" : "Браузер не сохранил изменение");
+    notice(store("scores:" + task.id, null) ? "Результат убран" : "Браузер не сохранил изменение");
   });
 }
 
@@ -301,7 +336,9 @@ function bindEditor(key, draft, language) {
   languageSelect.value = language;
   code.value = draft.code ?? "";
   status.textContent = draft.code ? "Сохранено в браузере" : "Черновик";
+  let revision = 0;
   const saveDraft = () => {
+    revision++;
     status.textContent = store(key, { language: languageSelect.value, code: code.value })
       ? "Сохранено в браузере"
       : "Черновик не сохранён";
@@ -312,13 +349,14 @@ function bindEditor(key, draft, language) {
     const selected = file.files?.[0];
     file.value = "";
     if (!selected) return;
+    const importRevision = ++revision;
     if (selected.size > maxDraftSize) {
       notice("Выбери файл до 128 КБ");
       return;
     }
     try {
       const contents = await selected.text();
-      if (!code.isConnected) return;
+      if (!code.isConnected || importRevision !== revision) return;
       if (contents.includes("\0")) {
         notice("Выбери текстовый файл с исходным кодом");
         return;
@@ -329,7 +367,7 @@ function bindEditor(key, draft, language) {
       saveDraft();
       code.focus();
     } catch {
-      notice("Не удалось прочитать файл");
+      if (code.isConnected && importRevision === revision) notice("Не удалось прочитать файл");
     }
   });
   $("copy").addEventListener("click", async () => {
@@ -360,11 +398,42 @@ function bindEditor(key, draft, language) {
 }
 
 function closeNavigation() {
+  if (!$("sidebar").classList.contains("open")) return false;
   $("sidebar").classList.remove("open");
   $("mobile-nav").setAttribute("aria-expanded", "false");
+  return true;
+}
+
+function syncTaskStates(event) {
+  if (!event.key?.startsWith(storagePrefix)) return;
+  const [kind, id] = event.key.slice(storagePrefix.length).split(":");
+  if ((kind !== "saved" && kind !== "scores") || !byId.has(id)) return;
+  // Read current storage in case more changes arrived after this event was queued.
+  const value = read(kind + ":" + id, read(kind, {})?.[id]);
+  updateTaskState(kind, id, value);
+  updateProgress();
+  if (!route.task) {
+    if (kind === "scores" && listView === "progress") renderSummary();
+    renderList();
+    return;
+  }
+  if (route.task.id !== id) return;
+  if (kind === "saved") {
+    updateBookmark($("task-view").querySelector("[data-bookmark]"), value === true);
+  } else {
+    const input = $("score");
+    const unedited = input.value === input.defaultValue;
+    input.defaultValue = isScore(value) ? String(value) : "";
+    if (unedited) input.value = input.defaultValue;
+    $("remove-score").hidden = !isScore(value);
+  }
 }
 
 $("source-link").href = officialArchive;
+document.querySelector(".skip-link").addEventListener("click", (event) => {
+  event.preventDefault();
+  $("main").focus();
+});
 for (const id of filters) $(id).addEventListener(id === "search" ? "input" : "change", renderList);
 $("browse-btn").addEventListener("click", () => {
   $("catalog").focus({ preventScroll: true });
@@ -374,13 +443,14 @@ $("browse-btn").addEventListener("click", () => {
 $("mobile-nav").addEventListener("click", () => {
   const open = $("sidebar").classList.toggle("open");
   $("mobile-nav").setAttribute("aria-expanded", open);
+  if (open) $("sidebar").querySelector("[aria-current='page']").focus();
 });
 
 document.addEventListener("click", (event) => {
   const bookmark = event.target.closest("[data-bookmark]");
   if (bookmark) toggleSaved(bookmark.dataset.bookmark, bookmark);
   if (event.target.closest("[data-help]")) {
-    closeNavigation();
+    if (closeNavigation()) $("mobile-nav").focus();
     $("help-dialog").showModal();
   }
   if (event.target.closest("[data-close]")) $("help-dialog").close();
@@ -390,11 +460,14 @@ document.addEventListener("click", (event) => {
     $("search").focus();
   }
   if (!$("sidebar").contains(event.target) && !$("mobile-nav").contains(event.target)) closeNavigation();
-  if (event.target.closest(".sidebar a")) closeNavigation();
+  const sideLink = event.target.closest(".sidebar a");
+  if (sideLink && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+    if (closeNavigation() && sideLink.hash === location.hash) $("mobile-nav").focus();
+  }
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeNavigation();
+  if (event.key === "Escape" && closeNavigation()) $("mobile-nav").focus();
   if (event.key === "/" && !route.task && !$("help-dialog").open
       && !event.ctrlKey && !event.metaKey && !event.altKey
       && !event.target.closest("input, textarea, select, [contenteditable]")) {
@@ -403,7 +476,8 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-window.addEventListener("hashchange", renderRoute);
+window.addEventListener("hashchange", () => renderRoute(true));
+window.addEventListener("storage", syncTaskStates);
 new ResizeObserver(() => paintHero($("hero-graph"))).observe($("hero"));
 paintIcons();
 updateProgress();
