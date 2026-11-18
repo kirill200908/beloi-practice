@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6fa">
+  <meta name="description" content="Задачи III и IV этапов республиканской олимпиады по информатике в Беларуси за 2024/25 и 2025/26 учебные годы.">
+  <title>BelOI · Архив задач</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">К содержанию</a>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar" aria-label="Основная навигация">
+      <a class="brand" href="#archive">
+        <span class="brand-mark" aria-hidden="true">&gt;_</span>
+        <span><strong>BelOI<span>.</span></strong><small>Олимпиадный тренажёр</small></span>
+      </a>
+      <nav class="side-nav">
+        <span class="nav-label">Тренировки</span>
+        <a class="side-link" data-view="archive" href="#archive"><span data-icon="grid"></span>Все задачи</a>
+        <a class="side-link" data-view="saved" href="#saved"><span data-icon="bookmark"></span>Избранное <span id="saved-count" class="side-count"></span></a>
+        <a class="side-link" data-view="progress" href="#progress"><span data-icon="chart"></span>Мой прогресс</a>
+        <span class="nav-label nav-break">Этапы</span>
+        <a class="side-link" data-view="stage-3" href="#stage-3"><span class="side-roman">III</span>Областной</a>
+        <a class="side-link" data-view="stage-4" href="#stage-4"><span class="side-roman">IV</span>Заключительный</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <a class="progress-card" href="#progress">
+          <div class="progress-label"><span data-icon="target"></span> Прогресс <b id="progress-pct">0%</b></div>
+          <span class="progress-track"><span id="progress-fill"></span></span>
+          <small id="progress-summary">Решено 0 задач</small>
+        </a>
+        <button class="side-help text-btn" data-help><span data-icon="help"></span> Как сдавать решения</button>
+      </div>
+    </aside>
+    <div class="right">
+      <header class="topbar">
+        <div class="top-inner">
+          <button class="icon-btn mobile-nav" id="mobile-nav" aria-label="Меню" aria-controls="sidebar" aria-expanded="false" data-icon="menu"></button>
+          <div class="breadcrumbs"><a href="#archive">Тренажёр</a><span aria-hidden="true">/</span><span id="crumb">Архив задач</span></div>
+          <button class="outline-btn top-help" data-help><span data-icon="help"></span> Помощь</button>
+        </div>
+      </header>
+      <main id="main" class="main-content">
+        <div id="archive-view">
+          <section class="hero" id="hero" aria-labelledby="hero-title">
+            <canvas id="hero-graph" aria-hidden="true"></canvas>
+            <div class="hero-content">
+              <span class="hero-kicker"><span></span> РЕСПУБЛИКАНСКАЯ ОЛИМПИАДА · БЕЛАРУСЬ</span>
+              <h1 id="hero-title">Олимпиадная<br>информатика</h1>
+              <p>Задачи III и IV этапов за два сезона. Читай условия, пиши код и проверяй решения на тестах олимпиады.</p>
+              <button class="hero-btn" id="browse-btn">К задачам <span data-icon="arrow-down"></span></button>
+            </div>
+            <span class="hero-period">2024/25 — 2025/26</span>
+          </section>
+          <div class="summary" id="summary"></div>
+          <section id="catalog" aria-labelledby="catalog-title" tabindex="-1">
+            <div class="section-heading">
+              <div><h2 id="catalog-title">Архив задач</h2><p id="catalog-note">Выбери сезон, этап или тур.</p></div>
+              <span class="result-count" id="result-count" aria-live="polite"></span>
+            </div>
+            <div class="filters">
+              <label class="search"><span data-icon="search"></span><input id="search" type="search" placeholder="Найти задачу" autocomplete="off" aria-label="Поиск по названию задачи"><kbd>/</kbd></label>
+              <label class="select-wrap"><span class="sr-only">Сезон</span><select id="season"><option value="">Все сезоны</option><option value="2026">2025/26</option><option value="2025">2024/25</option></select><span data-icon="chevron-down"></span></label>
+              <label class="select-wrap"><span class="sr-only">Этап</span><select id="stage"><option value="">Все этапы</option><option value="3">III этап</option><option value="4">IV этап</option></select><span data-icon="chevron-down"></span></label>
+              <label class="select-wrap"><span class="sr-only">Тур</span><select id="tour"><option value="">Все туры</option><option value="1">Тур 1</option><option value="2">Тур 2</option></select><span data-icon="chevron-down"></span></label>
+            </div>
+            <div id="catalog-content"></div>
+          </section>
+        </div>
+        <div id="task-view" hidden></div>
+        <footer class="footer"><span>BelOI · Архив задач</span><span><a id="source-link" target="_blank" rel="noopener noreferrer">Источник условий <span data-icon="external"></span></a><a href="https://official.contest.yandex.ru/CYF/archive/" target="_blank" rel="noopener noreferrer">Архив КЮП <span data-icon="external"></span></a></span></footer>
+      </main>
+    </div>
+  </div>
+  <dialog id="help-dialog">
+    <div class="dialog-head"><span class="metric-icon" data-icon="help"></span><button type="button" class="icon-btn" data-close aria-label="Закрыть" data-icon="x"></button></div>
+    <h2>Как сдавать решения</h2>
+    <ol>
+      <li>Открой задачу и прочитай условие из архива олимпиады.</li>
+      <li>Напиши код в редакторе или загрузи свой файл. Черновик сохранится в этом браузере.</li>
+      <li>Нажми «Открыть проверку», войди в Яндекс Контест и найди задачу. Отправь код или файл в формате, указанном в условии.</li>
+      <li>После проверки запиши баллы в карточке задачи. Они появятся в личном прогрессе.</li>
+    </ol>
+    <form method="dialog"><button class="primary-btn">Понятно</button></form>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
