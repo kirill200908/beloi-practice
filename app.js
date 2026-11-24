@@ -1,5 +1,6 @@
 import { officialArchive, tasks } from "./problems.js";
 import { paintHero, paintIcons } from "./graphics.js";
+import { mountJudge } from "./judge.js";
 
 const $ = (id) => document.getElementById(id);
 const byId = new Map(tasks.map((task) => [task.id, task]));
@@ -19,8 +20,10 @@ const scoreFormat = new Intl.NumberFormat("ru", { maximumFractionDigits: 2 });
 let listView = "archive";
 let route = { view: "archive" };
 let noticeTimeout;
+let cleanupJudge;
 const saved = readTaskStates("saved");
 const scores = readTaskStates("scores");
+const passed = readTaskStates("passed");
 
 function read(key, fallback) {
   try {
@@ -49,14 +52,14 @@ function readTaskStates(kind) {
   const states = {};
   for (const task of tasks) {
     const value = read(kind + ":" + task.id, previous?.[task.id]);
-    if (kind === "saved" ? value === true : isScore(value)) states[task.id] = value;
+    if (kind === "scores" ? isScore(value) : value === true) states[task.id] = value;
   }
   return states;
 }
 
 function updateTaskState(kind, id, value) {
-  const states = kind === "saved" ? saved : scores;
-  if (kind === "saved" ? value === true : isScore(value)) states[id] = value;
+  const states = { saved, scores, passed }[kind];
+  if (kind === "scores" ? isScore(value) : value === true) states[id] = value;
   else delete states[id];
 }
 
@@ -116,21 +119,21 @@ function updateBookmark(button, value) {
 }
 
 function updateProgress() {
-  const solved = tasks.filter((task) => scores[task.id] === 100).length;
+  const solved = tasks.filter((task) => passed[task.id] || scores[task.id] === 100).length;
   const count = tasks.filter((task) => saved[task.id]).length;
   const percent = Math.round(solved * 100 / tasks.length);
   $("saved-count").textContent = count || "";
   $("progress-pct").textContent = percent + "%";
   $("progress-fill").style.width = percent + "%";
-  $("progress-summary").textContent = solved + " из " + tasks.length + " решено";
+  $("progress-summary").textContent = solved + " из " + tasks.length + " закрыто";
 }
 
 function renderSummary() {
-  const solved = tasks.filter((task) => scores[task.id] === 100).length;
-  const count = tasks.filter((task) => isScore(scores[task.id])).length;
+  const solved = tasks.filter((task) => passed[task.id]).length;
+  const count = tasks.filter((task) => passed[task.id] || isScore(scores[task.id])).length;
   const cents = tasks.reduce((sum, task) => sum + Math.round((scores[task.id] ?? 0) * 100), 0);
   const stats = listView === "progress"
-    ? [["check", solved, "Решено на 100"], ["chart", scoreFormat.format(cents / 100), "Баллов набрано"], ["target", count, "Задач с результатом"]]
+    ? [["check", solved, "Тесты пройдены"], ["chart", scoreFormat.format(cents / 100), "Баллы олимпиады"], ["target", count, "Задач с результатом"]]
     : [["grid", tasks.length, "Задачи"], ["layers", "III и IV", "Этапы"], ["calendar", 2, "Сезона"]];
   $("summary").innerHTML = stats.map(([symbol, value, label]) => `
     <div class="metric"><span class="metric-icon" data-icon="${symbol}" aria-hidden="true"></span>
@@ -150,7 +153,7 @@ function renderList() {
     if ($("stage").value && task.stage !== Number($("stage").value)) return false;
     if ($("tour").value && task.tour !== Number($("tour").value)) return false;
     if (listView === "saved") return Boolean(saved[task.id]);
-    if (listView === "progress") return isScore(scores[task.id]);
+    if (listView === "progress") return passed[task.id] || isScore(scores[task.id]);
     return true;
   });
   $("result-count").textContent = formatCount(selected.length);
@@ -160,7 +163,7 @@ function renderList() {
       ? ["Задачи не найдены", "Попробуй другой запрос или сбрось фильтры."]
       : listView === "saved"
         ? ["Здесь будут избранные задачи", "Нажми значок закладки рядом с любой задачей."]
-        : ["Здесь будут твои результаты", "Запиши баллы после проверки в карточке задачи."];
+        : ["Здесь будут твои результаты", "Пройди проверку в карточке задачи."];
     const action = filtered
       ? '<button class="outline-btn" data-reset>Сбросить фильтры</button>'
       : '<a class="outline-btn" href="#archive">Открыть архив</a>';
@@ -177,11 +180,11 @@ function renderList() {
 
 function row(task) {
   const score = scores[task.id];
-  const status = score === 100 ? "100 · Решено" : isScore(score) ? scoreFormat.format(score) + " / 100" : "—";
-  const scoreClass = score === 100 ? "solved" : isScore(score) ? "scored" : "";
+  const status = score === 100 ? "100 · Решено" : isScore(score) ? scoreFormat.format(score) + " / 100" : passed[task.id] ? "Тесты пройдены" : "—";
+  const scoreClass = score === 100 ? "solved" : isScore(score) ? "scored" : passed[task.id] ? "solved" : "";
   const bookmark = saved[task.id] ? "Убрать из избранного" : "В избранное";
   return `<tr>
-    <td><a class="task-name" href="#task/${task.id}">${letterBadge(task)}<span>${task.title}<small class="task-compact">Тур ${task.tour}<span class="compact-score ${scoreClass}">${isScore(score) ? " · " + status : ""}</span></small></span></a></td>
+    <td><a class="task-name" href="#task/${task.id}">${letterBadge(task)}<span>${task.title}<small class="task-compact">Тур ${task.tour}<span class="compact-score ${scoreClass}">${status !== "—" ? " · " + status : ""}</span></small></span></a></td>
     <td>${task.season}</td><td>${stageTag(task)}</td><td class="tour-column">${task.tour}</td>
     <td class="status-column"><span class="row-status ${scoreClass}">${status}</span></td>
     <td class="row-actions"><button class="icon-btn" data-icon="bookmark" data-bookmark="${task.id}" aria-label="${bookmark}" aria-pressed="${Boolean(saved[task.id])}" title="${bookmark}"></button>
@@ -195,6 +198,8 @@ function resetFilters() {
 }
 
 function renderRoute(moveFocus = false) {
+  cleanupJudge?.();
+  cleanupJudge = undefined;
   const hash = location.hash.slice(1);
   const task = byId.get(hash.startsWith("task/") ? hash.slice(5) : "");
   const view = task ? listView : Object.hasOwn(names, hash) ? hash : "archive";
@@ -219,7 +224,7 @@ function renderRoute(moveFocus = false) {
     $("catalog-note").textContent = {
       archive: "Выбери сезон, этап или тур.",
       saved: "Задачи, к которым ты хочешь вернуться.",
-      progress: "Баллы, которые ты записал после проверки.",
+      progress: "Пройденные тесты и баллы, которые ты записал вручную.",
       "stage-3": "Областной этап республиканской олимпиады.",
       "stage-4": "Заключительный этап республиканской олимпиады.",
     }[view];
@@ -247,12 +252,6 @@ function renderTask(task) {
       ? `<a href="#task/${next.id}">${label} · ${next.letter}</a>`
       : "<span></span>";
   };
-  const judgeNote = {
-    outputs: "Это задача с открытыми тестами. Смотри в контесте, в каком формате отправлять выходные файлы.",
-    mixed: "У задачи две части с разными форматами сдачи. Найди обе по названию в контесте и запиши сумму баллов за обе части (максимум 70 + 30).",
-    interactive: "Отправь программу в Яндекс Контест. Она будет обмениваться запросами с программой жюри.",
-    code: "Войди в Яндекс Контест, найди задачу " + task.letter + " и отправь код. Контест покажет вердикт и баллы.",
-  }[task.mode];
   const checked = isScore(scores[task.id]);
   $("task-view").innerHTML = `
     <div class="task-top">
@@ -290,22 +289,33 @@ function renderTask(task) {
           <button class="outline-btn" id="copy" title="Копировать код" aria-label="Копировать код">${icon("copy")} Копировать</button>
           <button class="outline-btn" id="download" title="Скачать черновик" aria-label="Скачать черновик">${icon("download")}</button>
         </div>
-        <p class="detail-text">${judgeNote}</p>
-        <a class="primary-btn" id="judge" href="${task.judge}" target="_blank" rel="noopener noreferrer">Открыть проверку ${icon("external")}</a>
-        <a class="judge-backup" href="${task.judgeIndex}" target="_blank" rel="noopener noreferrer">Все контесты ${icon("external")}</a>
-        <form class="score-form" id="score-form">
+        <section class="judge-panel" id="judge-panel" aria-label="Проверка решения"></section>
+        <details class="score-form" ${checked ? "open" : ""}>
+          <summary>Записать баллы олимпиады вручную</summary>
+          <form id="score-form">
           <label for="score">Баллы из Контеста</label>
           <div class="score-input">
             <input id="score" type="number" inputmode="decimal" min="0" max="100" step="0.01" required placeholder="0–100" value="${checked ? scores[task.id] : ""}">
             <button class="outline-btn">Записать</button>
             <button class="outline-btn remove-score" id="remove-score" type="button" ${checked ? "" : "hidden"}>Убрать</button>
           </div>
-        </form>
+          </form>
+        </details>
       </section>
     </div>
     <nav class="task-nav" aria-label="Задачи тура">${neighbor(-1, "Предыдущая")}${neighbor(1, "Следующая")}</nav>`;
   paintIcons($("task-view"));
   bindEditor(key, draft, language);
+  cleanupJudge = mountJudge($("judge-panel"), {
+    task,
+    source: $("code"),
+    language: $("language"),
+    onPass() {
+      updateTaskState("passed", task.id, true);
+      store("passed:" + task.id, true);
+      updateProgress();
+    },
+  });
   $("score-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const scoreInput = $("score");
@@ -407,20 +417,20 @@ function closeNavigation() {
 function syncTaskStates(event) {
   if (!event.key?.startsWith(storagePrefix)) return;
   const [kind, id] = event.key.slice(storagePrefix.length).split(":");
-  if ((kind !== "saved" && kind !== "scores") || !byId.has(id)) return;
+  if (!["saved", "scores", "passed"].includes(kind) || !byId.has(id)) return;
   // Read current storage in case more changes arrived after this event was queued.
   const value = read(kind + ":" + id, read(kind, {})?.[id]);
   updateTaskState(kind, id, value);
   updateProgress();
   if (!route.task) {
-    if (kind === "scores" && listView === "progress") renderSummary();
+    if (kind !== "saved" && listView === "progress") renderSummary();
     renderList();
     return;
   }
   if (route.task.id !== id) return;
   if (kind === "saved") {
     updateBookmark($("task-view").querySelector("[data-bookmark]"), value === true);
-  } else {
+  } else if (kind === "scores") {
     const input = $("score");
     const unedited = input.value === input.defaultValue;
     input.defaultValue = isScore(value) ? String(value) : "";

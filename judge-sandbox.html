@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net; worker-src blob:; connect-src https://cdn.jsdelivr.net; base-uri 'none'; form-action 'none'">
+  <title>Среда выполнения BelOI</title>
+</head>
+<body>
+  <script>
+    addEventListener("message", function start(event) {
+      if (event.source !== parent || event.data?.type !== "beloi-start" || !event.ports[0]) return;
+      removeEventListener("message", start);
+      const parentPort = event.ports[0];
+      const reportError = (message) => parentPort.postMessage({ type: "problem", message });
+      const url = URL.createObjectURL(new Blob([event.data.workerSource], { type: "text/javascript" }));
+      try {
+        const worker = new Worker(url);
+        const channel = new MessageChannel();
+        channel.port1.onmessage = (reply) => {
+          URL.revokeObjectURL(url);
+          parentPort.postMessage(reply.data);
+        };
+        worker.onerror = (error) => {
+          URL.revokeObjectURL(url);
+          reportError(error.message || "Среда выполнения не запустилась.");
+        };
+        worker.postMessage(event.data.job, [channel.port2]);
+        addEventListener("pagehide", () => {
+          worker.terminate();
+          URL.revokeObjectURL(url);
+        }, { once: true });
+      } catch {
+        URL.revokeObjectURL(url);
+        reportError("Этот браузер не смог изолировать запуск программы.");
+      }
+    });
+  </script>
+</body>
+</html>
