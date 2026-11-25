@@ -1,12 +1,18 @@
 import { checkResult } from "./judge-checkers.js";
 
 const languages = new Set(["cpp", "python"]);
-const workerURL = new URL("./judge-worker.js", import.meta.url);
+const workerURL = new URL("./judge-worker.js?v=judge2", import.meta.url);
 const frameURL = new URL("./judge-sandbox.html", import.meta.url);
 const inputLimit = 128 * 1024;
 const prepTimeout = 150000;
 const compileTimeout = 60000;
+const cppLibraryFiles = {
+  "libc++.a": "judge-libcxx.a.gz",
+  "libc++abi.a": "judge-libcxxabi.a.gz",
+  "libunwind.a": "judge-libunwind.a.gz",
+};
 let workerSource;
+let cppArchives;
 
 function loadWorkerSource() {
   workerSource ??= fetch(workerURL).then((response) => {
@@ -17,6 +23,18 @@ function loadWorkerSource() {
     throw error;
   });
   return workerSource;
+}
+
+function loadCppArchives() {
+  cppArchives ??= Promise.all(Object.entries(cppLibraryFiles).map(async ([name, file]) => {
+    const response = await fetch(new URL(file + "?v=wasi-sdk-34", import.meta.url));
+    if (!response.ok) throw new Error("Не удалось загрузить стандартную библиотеку C++.");
+    return [name, await response.arrayBuffer()];
+  })).catch((error) => {
+    cppArchives = undefined;
+    throw error;
+  });
+  return cppArchives;
 }
 
 function startJudge({ language, source, cases, time, memory, custom }, onPhase) {
@@ -84,9 +102,11 @@ function startJudge({ language, source, cases, time, memory, custom }, onPhase) 
   };
   iframe.addEventListener("load", async () => {
     try {
-      const sourceText = await loadWorkerSource();
+      const [sourceText, archives] = await Promise.all([
+        loadWorkerSource(), language === "cpp" ? loadCppArchives() : null,
+      ]);
       if (!resolved) iframe.contentWindow.postMessage({
-        type: "beloi-start", workerSource: sourceText, job: { language, source, cases, memory },
+        type: "beloi-start", workerSource: sourceText, job: { language, source, cases, memory, archives },
       }, "*", [channel.port2]); // The sandbox has an opaque origin.
     } catch (error) {
       finish({ status: "error", message: String(error.message || error) });
@@ -173,11 +193,12 @@ function createOptions(select, cases, label) {
   }));
 }
 
-export function mountJudge(root, { task, source, language, onPass }) {
+export function mountJudge(root, { task, source, language, onPass, getParts, hasLegacyPass, hasOutputPass, onOutputPass }) {
   root.innerHTML = `
     <div class="judge-heading"><h3>Проверка на сайте</h3><small class="judge-local">Без входа</small></div>
     <p class="detail-text judge-context">Загружаем список тестов…</p>
     ${task.mode === "mixed" ? '<label class="judge-choice">Часть задачи<select data-judge-part><option value="code">Часть 1 · программа</option><option value="output">Часть 2 · выходные данные</option></select></label>' : ""}
+    ${task.mode === "mixed" ? '<p class="detail-text" data-part-progress></p>' : ""}
     <div data-code-pane hidden>
       <div class="judge-buttons"><button class="primary-btn" type="button" data-run-suite>Проверить решение</button><button class="outline-btn" type="button" data-stop hidden>Остановить</button></div>
       ${task.mode === "interactive" ? "" : '<details class="judge-extra"><summary>Свой ввод</summary><div class="judge-custom"><label>Входные данные<textarea data-custom-input spellcheck="false" maxlength="131072" rows="4"></textarea></label><button class="outline-btn" type="button" data-run-custom>Запустить</button></div></details>'}
@@ -198,6 +219,7 @@ export function mountJudge(root, { task, source, language, onPass }) {
   const pane = pick("[data-code-pane]");
   const outputPane = pick("[data-output-pane]");
   const mode = pick("[data-judge-part]");
+  const partProgress = pick("[data-part-progress]");
   const check = pick("[data-run-suite]");
   const stop = pick("[data-stop]");
   const run = pick("[data-run-custom]");
@@ -212,12 +234,23 @@ export function mountJudge(root, { task, source, language, onPass }) {
   let active = null;
   let unmounted = false;
 
+  function refreshParts() {
+    if (!partProgress) return;
+    const completed = getParts();
+    if (!completed.size && hasLegacyPass) {
+      partProgress.textContent = "В прежнем зачёте части не различались. Пройди проверку каждой части.";
+      return;
+    }
+    partProgress.textContent = "Пройдено частей: " + completed.size + " из 2.";
+  }
+
   function fileChanged() {
     pick("[data-file-input]").textContent = outputCases[Number(fileMenu.value)]?.input ?? "";
     resultNode.hidden = true;
   }
 
   function refresh() {
+    refreshParts();
     const showOutput = task.mode === "outputs" || mode?.value === "output";
     pane.hidden = showOutput;
     outputPane.hidden = !showOutput;
@@ -243,7 +276,7 @@ export function mountJudge(root, { task, source, language, onPass }) {
     stopOutput.hidden = !active;
   }
 
-  async function submit(custom, suite = codeCases) {
+  async function submit(custom, suite = codeCases, part = "code") {
     if (active) return;
     if (!source.value.trim()) {
       showResult(resultNode, { status: "error", message: "Сначала введи код в редактор." }, []);
@@ -270,31 +303,36 @@ export function mountJudge(root, { task, source, language, onPass }) {
     const verdict = await job.result;
     if (unmounted) return;
     active = null;
-    refresh();
     showResult(resultNode, verdict, cases);
-    if (!custom && verdict.status === "accepted" && cases.some((test) => test.kind === "practice")) onPass();
+    if (!custom && verdict.status === "accepted" && cases.some((test) => test.kind === "practice")) onPass(part);
+    refresh();
   }
 
   check.addEventListener("click", () => submit(false));
   run?.addEventListener("click", () => submit(true));
   stop.addEventListener("click", () => active?.cancel());
-  checkGenerator.addEventListener("click", () => submit(false, outputCases.filter((test) => !test.optional)));
+  checkGenerator.addEventListener("click", () => submit(false, outputCases.filter((test) => !test.optional), "output"));
   stopOutput.addEventListener("click", () => active?.cancel());
   mode?.addEventListener("change", () => { refresh(); fileChanged(); });
   fileMenu.addEventListener("change", fileChanged);
   checkOutput.addEventListener("click", () => {
     const output = (pick("[data-output-value]") ?? source).value;
-    const test = outputCases[Number(fileMenu.value)];
+    const index = Number(fileMenu.value);
+    const test = outputCases[index];
     if (!test) return;
     const verdict = checkResult(test, { output });
     const status = verdict.correct ? "accepted" : verdict.partial ? "partial" : "wrong";
     showResult(resultNode, { status, message: verdict.message, executed: verdict.correct ? [{}] : [] }, [test]);
-    if (verdict.correct && task.mode === "outputs" && test.kind === "practice") {
-      completedOutputs.add(test);
-      if (outputCases.every((item) => item.kind !== "practice" || completedOutputs.has(item))) onPass();
+    if (verdict.correct && !test.optional) {
+      completedOutputs.add(index);
+      onOutputPass(index, test.input);
+      if (outputCases.every((item, i) => item.optional || completedOutputs.has(i) || hasOutputPass(i, item.input))) {
+        onPass("output");
+        refreshParts();
+      }
     }
   });
-  import("./judge-tests.js").then(({ testSuites, outputTestSuites }) => {
+  import("./judge-tests.js?v=judge2").then(({ testSuites, outputTestSuites }) => {
     if (unmounted) return;
     const suite = testSuites[task.id] ?? [];
     codeCases = task.mode === "outputs" ? [] : suite.filter((test) => !test.optional);
@@ -308,8 +346,12 @@ export function mountJudge(root, { task, source, language, onPass }) {
       context.textContent = "Набор тестов не загрузился. Можно обновить страницу или запустить код на своём вводе.";
     }
   });
-  return () => {
-    unmounted = true;
-    active?.cancel();
+  refreshParts();
+  return {
+    refreshParts,
+    dispose() {
+      unmounted = true;
+      active?.cancel();
+    },
   };
 }

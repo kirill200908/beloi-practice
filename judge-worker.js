@@ -45,17 +45,27 @@ function inputStream(input, interactor) {
   };
 }
 
-async function loadCpp(memory) {
-  const [clang, wasi] = await Promise.all([import(CLANG), import(WASI)]);
+async function loadCpp(memory, archives) {
+  const [clang, wasi, libraries] = await Promise.all([
+    import(CLANG),
+    import(WASI),
+    Promise.all(archives.map(async ([name, archive]) => {
+      const stream = new Response(archive).body.pipeThrough(new DecompressionStream("gzip"));
+      const bytes = await new Response(stream).arrayBuffer();
+      return [name, new Uint8Array(bytes)];
+    })).then(Object.fromEntries),
+  ]);
   return async (source) => {
     let diagnostics = "";
     const diagnosticDecoder = new TextDecoder();
     let files;
     try {
       files = await clang.runClang([
-        "clang++", "-std=c++20", "-O2", "-fno-exceptions", "-Wl,-z,stack-size=8388608",
+        "clang++", "-std=c++20", "-O2", "-fwasm-exceptions", "-mllvm", "-wasm-use-legacy-eh=false",
+        "-Wl,-z,stack-size=8388608",
         `-Wl,--max-memory=${memory * 1048576}`, "-I.", "solution.cpp", "-o", "solution.wasm",
-      ], { "solution.cpp": source, bits: { "stdc++.h": contestHeader } }, {
+        "-nostdlib++", "-L.", "-lc++", "-lc++abi", "-lunwind",
+      ], { ...libraries, "solution.cpp": source, bits: { "stdc++.h": contestHeader } }, {
         stdout: null,
         stderr: (chunk) => {
           if (chunk && diagnostics.length < 12000) {
@@ -99,13 +109,31 @@ async function loadPython() {
     const scope = python.globals.get("dict")();
     scope.set("_source", source);
     try {
-      python.runPython(`_code = compile(_source, 'solution.py', 'exec')
+      python.runPython(`import io as _io
+import sys as _sys
+
+_code = compile(_source, 'solution.py', 'exec')
 def _run():
+    previous = (_sys.stdin, _sys.stdout, _sys.stderr, _sys.__stdin__, _sys.__stdout__, _sys.__stderr__)
+    stdin = _io.open(0, "r", encoding="utf-8", closefd=False)
+    stdout = _io.open(1, "w", encoding="utf-8", buffering=1, closefd=False)
+    stderr = _io.open(2, "w", encoding="utf-8", buffering=1, closefd=False)
+    _sys.stdin = _sys.__stdin__ = stdin
+    _sys.stdout = _sys.__stdout__ = stdout
+    _sys.stderr = _sys.__stderr__ = stderr
     try:
         exec(_code, {'__name__': '__main__', '__file__': 'solution.py'})
     except SystemExit as error:
         if error.code not in (None, 0):
             raise
+    finally:
+        try:
+            if not stdout.closed:
+                stdout.flush()
+            if not stderr.closed:
+                stderr.flush()
+        finally:
+            _sys.stdin, _sys.stdout, _sys.stderr, _sys.__stdin__, _sys.__stdout__, _sys.__stderr__ = previous
 `, { globals: scope });
     } catch (error) {
       scope.destroy();
@@ -187,11 +215,11 @@ function comparisonInteractor(input, permutationText) {
 
 addEventListener("message", async (event) => {
   const report = event.ports[0].postMessage.bind(event.ports[0]);
-  const { language, source, cases, memory = 256 } = event.data;
+  const { language, source, cases, memory = 256, archives } = event.data;
   let compile;
   try {
     report({ type: "phase", phase: "load" });
-    compile = await (language === "cpp" ? loadCpp(memory) : loadPython());
+    compile = await (language === "cpp" ? loadCpp(memory, archives) : loadPython());
   } catch (error) {
     report({ type: "problem", message: "Не удалось загрузить среду. " + String(error).slice(0, 1200) });
     return;

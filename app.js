@@ -1,6 +1,6 @@
 import { officialArchive, tasks } from "./problems.js";
 import { paintHero, paintIcons } from "./graphics.js";
-import { mountJudge } from "./judge.js";
+import { mountJudge } from "./judge.js?v=judge2";
 
 const $ = (id) => document.getElementById(id);
 const byId = new Map(tasks.map((task) => [task.id, task]));
@@ -20,10 +20,15 @@ const scoreFormat = new Intl.NumberFormat("ru", { maximumFractionDigits: 2 });
 let listView = "archive";
 let route = { view: "archive" };
 let noticeTimeout;
-let cleanupJudge;
+let taskJudge;
 const saved = readTaskStates("saved");
 const scores = readTaskStates("scores");
 const passed = readTaskStates("passed");
+const partNames = ["code", "output"];
+const passedParts = new Map(tasks.filter((task) => task.mode === "mixed").map((task) => [
+  task.id,
+  new Set(partNames.filter((part) => read("part-pass:" + task.id + ":" + part, false) === true)),
+]));
 
 function read(key, fallback) {
   try {
@@ -61,6 +66,26 @@ function updateTaskState(kind, id, value) {
   const states = { saved, scores, passed }[kind];
   if (kind === "scores" ? isScore(value) : value === true) states[id] = value;
   else delete states[id];
+}
+
+function hasPassed(task) {
+  return task.mode === "mixed" ? passedParts.get(task.id).size === partNames.length : passed[task.id] === true;
+}
+
+function hasResult(task) {
+  return isScore(scores[task.id]) || Boolean(passed[task.id]) || Boolean(passedParts.get(task.id)?.size);
+}
+
+function savePass(task, part) {
+  if (task.mode === "mixed") {
+    if (!partNames.includes(part)) return;
+    passedParts.get(task.id).add(part);
+    store("part-pass:" + task.id + ":" + part, true);
+  } else {
+    updateTaskState("passed", task.id, true);
+    store("passed:" + task.id, true);
+  }
+  updateProgress();
 }
 
 function notice(message) {
@@ -119,7 +144,7 @@ function updateBookmark(button, value) {
 }
 
 function updateProgress() {
-  const solved = tasks.filter((task) => passed[task.id] || scores[task.id] === 100).length;
+  const solved = tasks.filter((task) => hasPassed(task) || scores[task.id] === 100).length;
   const count = tasks.filter((task) => saved[task.id]).length;
   const percent = Math.round(solved * 100 / tasks.length);
   $("saved-count").textContent = count || "";
@@ -129,8 +154,8 @@ function updateProgress() {
 }
 
 function renderSummary() {
-  const solved = tasks.filter((task) => passed[task.id]).length;
-  const count = tasks.filter((task) => passed[task.id] || isScore(scores[task.id])).length;
+  const solved = tasks.filter(hasPassed).length;
+  const count = tasks.filter(hasResult).length;
   const cents = tasks.reduce((sum, task) => sum + Math.round((scores[task.id] ?? 0) * 100), 0);
   const stats = listView === "progress"
     ? [["check", solved, "Тесты пройдены"], ["chart", scoreFormat.format(cents / 100), "Баллы олимпиады"], ["target", count, "Задач с результатом"]]
@@ -153,7 +178,7 @@ function renderList() {
     if ($("stage").value && task.stage !== Number($("stage").value)) return false;
     if ($("tour").value && task.tour !== Number($("tour").value)) return false;
     if (listView === "saved") return Boolean(saved[task.id]);
-    if (listView === "progress") return passed[task.id] || isScore(scores[task.id]);
+    if (listView === "progress") return hasResult(task);
     return true;
   });
   $("result-count").textContent = formatCount(selected.length);
@@ -180,8 +205,11 @@ function renderList() {
 
 function row(task) {
   const score = scores[task.id];
-  const status = score === 100 ? "100 · Решено" : isScore(score) ? scoreFormat.format(score) + " / 100" : passed[task.id] ? "Тесты пройдены" : "—";
-  const scoreClass = score === 100 ? "solved" : isScore(score) ? "scored" : passed[task.id] ? "solved" : "";
+  const complete = hasPassed(task);
+  const partial = passedParts.get(task.id)?.size;
+  const training = complete ? "Тесты пройдены" : partial ? "1 из 2 частей" : passed[task.id] ? "Прежний зачёт" : "—";
+  const status = score === 100 ? "100 · Решено" : isScore(score) ? scoreFormat.format(score) + " / 100" : training;
+  const scoreClass = score === 100 ? "solved" : isScore(score) ? "scored" : complete ? "solved" : partial ? "scored" : "";
   const bookmark = saved[task.id] ? "Убрать из избранного" : "В избранное";
   return `<tr>
     <td><a class="task-name" href="#task/${task.id}">${letterBadge(task)}<span>${task.title}<small class="task-compact">Тур ${task.tour}<span class="compact-score ${scoreClass}">${status !== "—" ? " · " + status : ""}</span></small></span></a></td>
@@ -198,8 +226,8 @@ function resetFilters() {
 }
 
 function renderRoute(moveFocus = false) {
-  cleanupJudge?.();
-  cleanupJudge = undefined;
+  taskJudge?.dispose();
+  taskJudge = undefined;
   const hash = location.hash.slice(1);
   const task = byId.get(hash.startsWith("task/") ? hash.slice(5) : "");
   const view = task ? listView : Object.hasOwn(names, hash) ? hash : "archive";
@@ -306,14 +334,18 @@ function renderTask(task) {
     <nav class="task-nav" aria-label="Задачи тура">${neighbor(-1, "Предыдущая")}${neighbor(1, "Следующая")}</nav>`;
   paintIcons($("task-view"));
   bindEditor(key, draft, language);
-  cleanupJudge = mountJudge($("judge-panel"), {
+  taskJudge = mountJudge($("judge-panel"), {
     task,
     source: $("code"),
     language: $("language"),
-    onPass() {
-      updateTaskState("passed", task.id, true);
-      store("passed:" + task.id, true);
-      updateProgress();
+    onPass(part) { savePass(task, part); },
+    getParts() { return passedParts.get(task.id); },
+    hasLegacyPass: task.mode === "mixed" && passed[task.id] === true,
+    hasOutputPass(index, input) {
+      return read("output-pass:" + task.id + ":" + index, null) === input;
+    },
+    onOutputPass(index, input) {
+      store("output-pass:" + task.id + ":" + index, input);
     },
   });
   $("score-form").addEventListener("submit", (event) => {
@@ -416,7 +448,19 @@ function closeNavigation() {
 
 function syncTaskStates(event) {
   if (!event.key?.startsWith(storagePrefix)) return;
-  const [kind, id] = event.key.slice(storagePrefix.length).split(":");
+  const [kind, id, part] = event.key.slice(storagePrefix.length).split(":");
+  if (kind === "part-pass" && passedParts.has(id) && partNames.includes(part)) {
+    const current = passedParts.get(id);
+    if (read("part-pass:" + id + ":" + part, false) === true) current.add(part);
+    else current.delete(part);
+    updateProgress();
+    if (route.task?.id === id) taskJudge?.refreshParts();
+    if (!route.task) {
+      if (listView === "progress") renderSummary();
+      renderList();
+    }
+    return;
+  }
   if (!["saved", "scores", "passed"].includes(kind) || !byId.has(id)) return;
   // Read current storage in case more changes arrived after this event was queued.
   const value = read(kind + ":" + id, read(kind, {})?.[id]);
