@@ -1,6 +1,6 @@
 import { officialArchive, tasks } from "./problems.js";
 import { paintHero, paintIcons } from "./graphics.js";
-import { mountJudge } from "./judge.js?v=judge2";
+import { mountJudge } from "./judge.js?v=judge3";
 
 const $ = (id) => document.getElementById(id);
 const byId = new Map(tasks.map((task) => [task.id, task]));

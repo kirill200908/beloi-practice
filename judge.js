@@ -1,10 +1,10 @@
 import { checkResult } from "./judge-checkers.js";
 
 const languages = new Set(["cpp", "python"]);
-const workerURL = new URL("./judge-worker.js?v=judge2", import.meta.url);
+const workerURL = new URL("./judge-worker.js?v=judge3", import.meta.url);
 const frameURL = new URL("./judge-sandbox.html", import.meta.url);
 const inputLimit = 128 * 1024;
-const prepTimeout = 150000;
+const loadIdleTimeout = 150000;
 const compileTimeout = 60000;
 const cppLibraryFiles = {
   "libc++.a": "judge-libcxx.a.gz",
@@ -62,12 +62,18 @@ function startJudge({ language, source, cases, time, memory, custom }, onPhase) 
     timer = setTimeout(() => finish(outcome), ms);
   }
 
-  startTimer(prepTimeout, { status: "error", message: "Среда загружается слишком долго. Проверь подключение и повтори запуск." });
+  function startLoadTimer() {
+    startTimer(loadIdleTimeout, { status: "error", message: "Загрузка среды остановилась. Проверь подключение и повтори запуск." });
+  }
+
+  startLoadTimer();
   channel.port1.onmessage = ({ data }) => {
     if (!data || !data.type) return;
     if (data.type === "phase") {
-      onPhase(data.phase, data.index);
-      if (data.phase === "compile") {
+      onPhase(data.phase, data.index, data.percent);
+      if (data.phase === "load" || data.phase === "download") {
+        startLoadTimer();
+      } else if (data.phase === "compile") {
         startTimer(compileTimeout, { status: "error", message: "Компиляция заняла слишком много времени." });
       } else if (data.phase === "run") {
         const inputLength = cases[data.index].input.length;
@@ -293,10 +299,12 @@ export function mountJudge(root, { task, source, language, onPass, getParts, has
     resultNode.hidden = false;
     resultNode.dataset.verdict = "running";
     resultNode.textContent = "Запускаем проверку…";
-    const job = startJudge({ language: language.value, source: source.value, cases, time: task.time, memory: task.memory ?? 256, custom }, (phase, index) => {
-      resultNode.textContent = phase === "load" ? "Загружаем среду выполнения…"
-        : phase === "compile" ? "Подготавливаем программу…"
+    const job = startJudge({ language: language.value, source: source.value, cases, time: task.time, memory: task.memory ?? 256, custom }, (phase, index, percent) => {
+      const message = phase === "load" ? "Загружаем среду выполнения…"
+        : phase === "download" ? `Загружаем компилятор C++… ${percent}%`
+        : phase === "compile" ? "Компилируем решение…"
         : custom ? "Выполняем программу…" : `Выполняем тест ${index + 1} из ${cases.length}…`;
+      if (resultNode.textContent !== message) resultNode.textContent = message;
     });
     active = job;
     refresh();

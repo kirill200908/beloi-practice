@@ -45,9 +45,19 @@ function inputStream(input, interactor) {
   };
 }
 
-async function loadCpp(memory, archives) {
+async function loadCpp(memory, archives, onDownload) {
   const [clang, wasi, libraries] = await Promise.all([
-    import(CLANG),
+    import(CLANG).then(async (module) => {
+      // A null command loads and compiles the toolchain itself without compiling a submission.
+      let lastUpdate = -Infinity;
+      await module.runClang(null, {}, { fetchProgress({ doneLength, totalLength }) {
+        const now = performance.now();
+        if (now - lastUpdate < 750 && doneLength < totalLength) return;
+        lastUpdate = now;
+        onDownload(Math.min(100, Math.floor(100 * doneLength / totalLength)));
+      } });
+      return module;
+    }),
     import(WASI),
     Promise.all(archives.map(async ([name, archive]) => {
       const stream = new Response(archive).body.pipeThrough(new DecompressionStream("gzip"));
@@ -219,7 +229,9 @@ addEventListener("message", async (event) => {
   let compile;
   try {
     report({ type: "phase", phase: "load" });
-    compile = await (language === "cpp" ? loadCpp(memory, archives) : loadPython());
+    compile = await (language === "cpp" ? loadCpp(memory, archives, (percent) => {
+      report({ type: "phase", phase: "download", percent });
+    }) : loadPython());
   } catch (error) {
     report({ type: "problem", message: "Не удалось загрузить среду. " + String(error).slice(0, 1200) });
     return;
